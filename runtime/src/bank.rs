@@ -88,8 +88,8 @@ use {
     agave_reserved_account_keys::ReservedAccountKeys,
     agave_snapshots::snapshot_hash::SnapshotHash,
     agave_transaction_view::{
+        message_view::SanitizedMessageView,
         resolved_transaction_view::ResolvedTransactionView,
-        transaction_data::TransactionData,
         transaction_version::TransactionVersion,
         transaction_view::{SanitizedTransactionView, UnsanitizedTransactionView},
     },
@@ -193,7 +193,10 @@ use {
         AccountLoadCallback, InvokeContextCallback, TransactionProcessingCallback,
     },
     solana_svm_timings::{ExecuteTimingType, ExecuteTimings},
-    solana_svm_transaction::svm_message::{SVMMessage, SVMStaticMessage},
+    solana_svm_transaction::{
+        message_address_table_lookup::SVMMessageAddressTableLookup,
+        svm_message::{SVMMessage, SVMStaticMessage},
+    },
     solana_syscalls::create_program_runtime_environment,
     solana_system_transaction as system_transaction,
     solana_sysvar::{self as sysvar, last_restart_slot::LastRestartSlot},
@@ -3489,6 +3492,17 @@ impl Bank {
     }
 
     pub fn get_fee_for_message(&self, message: &SanitizedMessage) -> Option<u64> {
+        let transaction_configuration =
+            TransactionConfiguration::try_from_sanitized_message(message, &self.feature_set)
+                .ok()?;
+        self.get_fee_for_message_with_configuration(message, &transaction_configuration)
+    }
+
+    pub fn get_fee_for_message_with_configuration(
+        &self,
+        message: &impl SVMStaticMessage,
+        transaction_configuration: &TransactionConfiguration,
+    ) -> Option<u64> {
         {
             let blockhash_queue = self.blockhash_queue.read().unwrap();
             blockhash_queue.get_lamports_per_signature(message.recent_blockhash())
@@ -3500,9 +3514,6 @@ impl Bank {
                 .map(|nonce_data| nonce_data.get_lamports_per_signature())
         })?;
 
-        let transaction_configuration =
-            TransactionConfiguration::try_from_sanitized_message(message, &self.feature_set)
-                .ok()?;
         Some(solana_fee::calculate_fee(
             message,
             self.fee_structure().lamports_per_signature,
@@ -5612,7 +5623,7 @@ impl Bank {
         verification_mode: TransactionVerificationMode,
     ) -> Result<RuntimeTransaction<ResolvedTransactionView<D>>>
     where
-        D: TransactionData,
+        D: AsRef<[u8]>,
     {
         let max_transaction_size = match tx.version() {
             TransactionVersion::V1 => solana_message::v1::MAX_TRANSACTION_SIZE,
@@ -5664,17 +5675,31 @@ impl Bank {
 
     /// Load addresses from ALTs (if necessary) and return the
     /// [`LoadedAddresses`] with the minimum deactivation slot.
-    pub fn load_addresses_for_view<D: TransactionData>(
+    pub fn load_addresses_for_view<D: AsRef<[u8]>>(
         &self,
         view: &SanitizedTransactionView<D>,
     ) -> std::result::Result<(Option<LoadedAddresses>, Slot), AddressLoaderError> {
-        match view.version() {
+        self.load_addresses_for_version(view.version(), view.address_table_lookup_iter())
+    }
+
+    /// Same as [`Self::load_addresses_for_view`], for a message view.
+    pub fn load_addresses_for_message_view<D: AsRef<[u8]>>(
+        &self,
+        view: &SanitizedMessageView<D>,
+    ) -> std::result::Result<(Option<LoadedAddresses>, Slot), AddressLoaderError> {
+        self.load_addresses_for_version(view.version(), view.address_table_lookup_iter())
+    }
+
+    fn load_addresses_for_version<'a>(
+        &self,
+        version: TransactionVersion,
+        address_table_lookups: impl Iterator<Item = SVMMessageAddressTableLookup<'a>>,
+    ) -> std::result::Result<(Option<LoadedAddresses>, Slot), AddressLoaderError> {
+        match version {
             TransactionVersion::Legacy | TransactionVersion::V1 => Ok((None, u64::MAX)),
-            TransactionVersion::V0 => self
-                .load_addresses_from_ref(view.address_table_lookup_iter())
-                .map(|(loaded_addresses, deactivation_slot)| {
-                    (Some(loaded_addresses), deactivation_slot)
-                }),
+            TransactionVersion::V0 => self.load_addresses_from_ref(address_table_lookups).map(
+                |(loaded_addresses, deactivation_slot)| (Some(loaded_addresses), deactivation_slot),
+            ),
         }
     }
 
