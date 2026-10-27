@@ -3669,6 +3669,7 @@ pub mod rpc_accounts_scan {
 pub mod rpc_full {
     use {
         super::*,
+        agave_transaction_view::transaction_view::UnsanitizedTransactionView,
         solana_message::{SanitizedVersionedMessage, VersionedMessage},
         solana_transaction_status::{
             UiInnerInstructions, UiLoadedAddresses, parse_ui_inner_instructions,
