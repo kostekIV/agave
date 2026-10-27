@@ -3488,6 +3488,17 @@ impl Bank {
     }
 
     pub fn get_fee_for_message(&self, message: &SanitizedMessage) -> Option<u64> {
+        let transaction_configuration =
+            TransactionConfiguration::try_from_sanitized_message(message, &self.feature_set)
+                .ok()?;
+        self.get_fee_for_message_with_configuration(message, &transaction_configuration)
+    }
+
+    pub fn get_fee_for_message_with_configuration(
+        &self,
+        message: &impl SVMStaticMessage,
+        transaction_configuration: &TransactionConfiguration,
+    ) -> Option<u64> {
         {
             let blockhash_queue = self.blockhash_queue.read().unwrap();
             blockhash_queue.get_lamports_per_signature(message.recent_blockhash())
@@ -3499,9 +3510,6 @@ impl Bank {
                 .map(|nonce_data| nonce_data.get_lamports_per_signature())
         })?;
 
-        let transaction_configuration =
-            TransactionConfiguration::try_from_sanitized_message(message, &self.feature_set)
-                .ok()?;
         Some(solana_fee::calculate_fee(
             message,
             self.fee_structure().lamports_per_signature,
